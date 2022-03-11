@@ -2,10 +2,12 @@
 Tools for analyzing Fluorescence In Situ Hybridization (FISH) microscopy data
 
 ## Requirements
-NumPy, SciPy, Matplotlib
+- Python, NumPy, SciPy, pandas, scikit-image, Matplotlib
+- Jupyter
+- Fiji/ImageJ
 
-## Author
+## Authors
 Antoine Coulon <antoine.coulon@curie.fr>.
 
 ## Licence
-Code under GNU GPL v3 license. See `LICENSE` file for mor information
+Code under GNU GPL v3 license. See `LICENSE` file for more information
