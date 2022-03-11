@@ -1,6 +1,7 @@
 # Parameter file to use with FISH_pipeline.py and assignSpotsToNucl.py
 #
 
+
 FISHchannels=[[1,'_Q670',20.],[2,'_CAL610',35.],[3,'_Q570',25.],[4,'_FAM',250.]]
 #fieldMask='out/20210331_MK_test_tmp-nuclei.tif'
 
