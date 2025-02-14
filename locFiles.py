@@ -3,7 +3,7 @@
 ## FISHingRod -- Image analysis software suite for fluorescence in situ
 ##               hybridization (FISH) data.
 ##
-## Antoine Coulon, 2022
+## Antoine Coulon, 2024
 ## Contact: <antoine.coulon@curie.fr>
 ##
 ##
@@ -23,6 +23,7 @@
 ################################################################################
 
 
+from numpy import *
 from scipy import *
 from scipy import ndimage, special, optimize
 import scipy.stats
@@ -31,11 +32,11 @@ from matplotlib import pyplot as plt
 import os, sys, imp
 import copy
 from skimage import io
-from skimage.external import tifffile
+#from skimage.external import tifffile
 import warnings
 import json
 
-__version__='1.1.8'
+__version__='1.2.0'
 
 
 toBold=lambda s: '\033[1m%s\033[0m'%(s)
@@ -361,7 +362,7 @@ class mcLoc:
         if type(bins)   ==type(None): bins=r_[:20:.01]
         if type(binsLog)==type(None): binsLog=10**r_[-2:1.5:.01]
         
-        h,d  =histogram(s.dist[c0,c1][:,0],bins=bins); d=(d[1:]+d[:-1])
+        h,d  =histogram(s.dist[c0,c1][:,0],bins=bins); d=(d[1:]+d[:-1])/2
         plt.sca(ax[0]); plt.title(s.lData[c0].name+(" – %s"%(s.lData[c1].name) if c0!=c1 else ""))
         #plt.gca().spines['left'].set_color(s.lData[c0].color)
         plt.plot(d,h,c=s.lData[c1].color);
@@ -371,7 +372,7 @@ class mcLoc:
         plt.xlabel('Distance (µm)'); plt.ylabel('Counts');
         if type(dThr)!=type(None):  plt.axvline(dThr,c='k',ls=':')
 
-        h,d  =histogram(s.dist[c0,c1][:,0],bins=binsLog); d=(d[1:]+d[:-1])
+        h,d  =histogram(s.dist[c0,c1][:,0],bins=binsLog); d=(d[1:]+d[:-1])/2
         plt.sca(ax[1]); plt.title(s.lData[c0].name+(" – %s"%(s.lData[c1].name) if c0!=c1 else ""))
         #plt.gca().spines['left'].set_color(s.lData[c0].color)
         plt.plot(d,h,c=s.lData[c1].color);
@@ -606,12 +607,8 @@ def inspectLoc(raw=None,
   
     # Open raw image
     if verbose>=2: print('Opening raw image...')
-    if tifffile.TiffFile(rawPath).is_micromanager:
-      imFile=tifffile.TiffFile(rawPath,is_ome=False)
-      im=imFile.asarray()
-      im=im.reshape(im.shape[:-2][::-1]+im.shape[-2:]).swapaxes(0,1) #!!!!!!!!!!!!
-    else: im=io.imread(rawPath);
-    im=im.swapaxes(1,3).swapaxes(2,3) #!!!!
+    im=io.imread(rawPath,is_ome=False)
+    im=im.reshape(im.shape[:-2][::-1]+im.shape[-2:]).swapaxes(0,1) #!!!!!!!!!!!!
     # /!\ Dimensions should be ZCYX /!\
     
     if type(bbox2)==list: bbox2=array(bbox2)
@@ -626,7 +623,200 @@ def inspectLoc(raw=None,
       if len(rawCCMs)!=im.shape[1]:
         raise ValueError("Parameter 'rawCCMs' should be a list with a number of elements equal to the number of channels in the raw image.")
     bbox2=bbox2.round().astype(int)
+  
+    if includeRaw:
+      if type(rawCCMs)==type(None):
+        imRes=c_[(im[:,:,bbox2[1]:bbox2[3],bbox2[0]:bbox2[2]]*1.).swapaxes(0,1).T,
+                 zeros((len(loc),im.shape[0],bbox2[3]-bbox2[1],bbox2[2]-bbox2[0])).T].T
+      else:
+        imRes=zeros((im.shape[1]+len(loc),im.shape[0],bbox2[3]-bbox2[1],bbox2[2]-bbox2[0]))
+        rawCCMs=[array(ccm).reshape(4,4) if type(ccm)!=type(None) else eye(4) for ccm in rawCCMs]
+        cooRaw=(lambda y,z,x: array([x,y,z,z*0+1]))(*meshgrid(r_[bbox2[1]:bbox2[3]],r_[:im.shape[0]],r_[bbox2[0]:bbox2[2]]))
+        for i in range(len(rawCCMs)):
+          imC=im.swapaxes(0,1)[i]
+          cooCorr=dot(cooRaw.T,scipy.linalg.inv(rawCCMs[i]).T).T[:3][::-1]
+          imRes[i]=ndimage.interpolation.map_coordinates(imC,cooCorr)
+        
+    else: imRes=zeros((len(loc),im.shape[0],bbox2[3]-bbox2[1],bbox2[2]-bbox2[0]))
+  
+  
+    for i in range(len(loc)):
+      l=loc[i]; lv=locVal[i]
+      
+      # Locate .loc file
+      if type(l) in [ndarray, scLoc]: fitResults=l
+      else:
+        if os.path.isfile(l): locPath=l
+        elif os.path.isfile(raw)     and os.path.isfile(raw[:-4]    +l): locPath=raw[:-4]+l
+        elif os.path.isfile(rawPath) and os.path.isfile(rawPath[:-4]+l): locPath=rawPath[:-4]+l
+        elif os.path.isfile(os.path.join(dirOut,l)): locPath=os.path.join(dirOut,l)
+        elif os.path.isfile(os.path.join(dirOut,raw[:-4]+l)): locPath=os.path.join(dirOut,raw[:-4]+l)
+        elif os.path.isfile(os.path.join(dirOut,os.path.basename(raw[:-4]))+l): locPath=os.path.join(dirOut,os.path.basename(raw[:-4]))+l
+        elif os.path.isfile(os.path.join(dirOut,os.path.basename(dirIn))+l): locPath=os.path.join(dirOut,os.path.basename(dirIn))+l
+        else: raise ValueError("Could not locate loc file from '%s'."%os.path.join(dirOut,raw[:-4]+l))
+        if verbose>=2: print("Using loc file '%s'"%locPath);
+        fitResults=loadtxt(locPath)
+      if fitResults.shape[0]==0: fitResults=zeros((0,10))
+      if len(fitResults.shape)==1: fitResults=fitResults.reshape(1,10)
+      if type(bbox2)!=type(None):
+        fitResults=fitResults[where((bbox2[0]<=fitResults[:,1])
+                                    * (fitResults[:,1]<bbox2[2])
+                                    * (bbox2[1]<=fitResults[:,2])
+                                    * (fitResults[:,2]<bbox2[3]))[0]]
+        #fitResults=array([p for p in fitResults if
+        #              bbox2[0]<=p[1]<bbox2[2] and bbox2[1]<=p[2]<bbox2[3]])
+      if cellId!=None:
+        fitResults=fitResults[where(fitResults[:,9]==cellId)[0]]
+      else:
+        fitResults=array([a for a in fitResults if os.path.basename(raw)[:-4] in cellIdToFileName[int(a[9])]])
+
+      x,y,z=fitResults[:,1:4].T.round().astype(int)
+      
+      # Locate locVal file
+      if type(lv)==int: lv=fitResults[:,lv]
+      elif lv==None: lv=1+i
+      else:
+        if verbose>=2: print('Opening locVal file...')
+        if os.path.isfile(lv): lvPath=lv
+        elif os.path.isfile(raw) and os.path.isfile(raw[:-4]+lv): lvPath=raw[:-4]+lv
+        elif os.path.isfile(os.path.join(dirOut,lv)): lvPath=os.path.join(dirOut,lv)
+        elif os.path.isfile(os.path.join(dirOut,raw[:-4]+lv)): lvPath=os.path.join(dirOut,raw[:-4]+lv)
+        elif os.path.isfile(os.path.join(dirIn,lv)): lvPath=os.path.join(dirIn,lv)
+        elif os.path.isfile(os.path.join(dirIn,raw[:-4]+lv)): lvPath=os.path.join(dirIn,raw[:-4]+lv)
+        else: raise ValueError("Could not locate locVal file from '%s'."%lv)
+        imLv=io.imread(lvPath)
+        lv=imLv[z,y,x]
+      
+      if verbose>=2: print('Drawing "box" image...')
+      for dx,dy in [[-4,-4],[-4,-3],[-4,-2],[-4,2],[-4,3],[-4,4],[-3,4],[-2,4],[2,4],[3,4],[4,4],[4,3],[4,2],[4,-2],[4,-3],[4,-4],[3,-4],[2,-4],[-2,-4],[-3,-4]]:
+        imRes[i-len(loc)][z, (y+dy-bbox2[1])%imRes.shape[-2],
+                             (x+dx-bbox2[0])%imRes.shape[-1]]=lv
+  
+    imRes=imRes.swapaxes(0,1)
+    if maxProj: imRes=imRes.max(0)
     
+    allImRes.append(imRes)
+
+
+  if len(allImRes)==1: imRes=allImRes[0]
+  else:
+    if verbose>=2: print('Concatenating all images...')
+    imShape=tuple(array([im.shape for im in allImRes]).max(0))
+    imRes=zeros((len(allImRes),)+imShape)
+    for i,im in enumerate(allImRes):
+      offsets=r_[imRes.shape[-1]-im.shape[-1],imRes.shape[-2]-im.shape[-2]]//2
+      imRes[i].T[offsets[0]:offsets[0]+im.shape[-1]][:,offsets[1]:offsets[1]+im.shape[-2]]+=im.T
+  
+  if verbose>=2: print('Saving...')
+  if fnTifInspect==None:
+    fnTif=os.path.basename(raw)
+    fnTifInspect=os.path.join(dirOut,fnTif)[:-4]+'_inspect.tif'
+  with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    #return float32(imRes)
+    io.imsave(fnTifInspect,float32(imRes),imagej=True)
+    #io.imsave(fnTifInspect,float32(imRes),compress=6)
+    #return fnTifInspect
+  if verbose>=1: print('Done.')
+
+    
+    
+#######################
+def spotImg(spotId=None,
+            bbox=None,
+            loc=[],
+            locVal=None,
+            rawCCMs=None,
+            dirIn=None,
+            dirOut=None,
+            averageProj=True,
+            fnTifOutput=None,
+            reIndexNuclei=False,
+            verbose=None):
+  
+  gl=globals()
+  
+  if verbose==None:
+    if type(cellId) in [list, ndarray]: verbose=1
+    else: verbose=0
+  
+  # Resolve input and output directories
+  if dirIn==None:
+    if 'dirIn' in gl.keys(): dirIn=gl['dirIn']
+    else: dirIn=os.getcwd()
+    #else: raise ValueError("'dirIn' not specified and not defined as a global variable.")
+  if dirOut==None: 
+    if 'dirOut' in gl.keys(): dirOut=gl['dirOut']
+    else: dirOut=os.path.join(dirIn,'out')
+    #else: dirOut=os.getcwd()
+    #else: raise ValueError("'dirOut' not specified and not defined as a global variable.")
+    
+  if fnTifInspect==None:
+    if 'dirSrc' in gl.keys(): fnTifInspect=os.path.join(gl['dirSrc'],'tmp-inspect.tif')
+    else: fnTifInspect='./tmp-inspect.tif'
+
+  #if type(mask)!=list: mask=[mask]
+  if type(loc)!=list: loc=[loc]
+  if locVal==None: locVal=[None]*len(loc)
+  if type(locVal)!=list: locVal=[locVal]*len(loc)
+  
+  allImRes=[]
+  
+  if (raw==None) == (type(cellId)==type(None)): raise ValueError("Need either 'raw' or 'cellId' to be defined.")
+  if type(cellId)!=type(None):
+    if not type(cellId) in [ndarray, list]: lCellIds=[cellId]
+    else: lCellIds=cellId
+  else: lCellIds=[None]
+
+  # Building and loading cellIdToFileName index
+  if os.path.exists(os.path.join(dirOut,'.cellIdToFileName.json')) and not reIndexNuclei:
+    cellIdToFileName=dict(json.load(open(os.path.join(dirOut,'.cellIdToFileName.json'))))
+  else:
+    if verbose>=1: print('Indexing nuclei...')
+    nuclFiles=[d for d in os.listdir(dirOut) if d[-9:]=='_nucl.tif']; nuclFiles.sort()
+    cellIdToFileName={}
+    for nf in nuclFiles:
+      cellIdToFileName.update(dict.fromkeys([int(aa) for aa in (set(io.imread(os.path.join(dirOut,nf)).flatten())-{0})],nf))
+      if len(lCellIds)==1 and lCellIds[0] in cellIdToFileName.keys(): break
+    if len(lCellIds)!=1:
+      json.dump(list(cellIdToFileName.items()),open(os.path.join(dirOut,'.cellIdToFileName.json'),'w'))
+
+  for cellId in lCellIds:
+    if verbose>=1 and cellId!=None: print('Computing cell %d ...'%cellId)
+    bbox2=bbox
+    if cellId!=None:
+      nf=cellIdToFileName[cellId]
+      nuclCoo=c_[where(io.imread(os.path.join(dirOut,nf))==cellId)]
+      if nuclCoo.shape[0]==0: raise ValueError("Could not find cell %d."%cellId)
+      raw=nf[:-9]+'.tif'
+      if type(bbox2)==type(None): bbox2=20.
+      if type(bbox2) in [int, float]:
+        bbox2=r_[nuclCoo.min(0)[::-1],nuclCoo.max(0)[::-1]]+r_[-1,-1,1,1]*bbox2      
+
+    # locate raw image file
+    if os.path.isfile(raw): rawPath=raw
+    elif os.path.isfile(os.path.join(dirIn,raw)): rawPath=os.path.join(dirIn,raw)
+    else: raise ValueError("Could not locate file '%s'."%raw)
+  
+    # Open raw image
+    if verbose>=2: print('Opening raw image...')
+    im=io.imread(rawPath,is_ome=False)
+    im=im.reshape(im.shape[:-2][::-1]+im.shape[-2:]).swapaxes(0,1) #!!!!!!!!!!!!
+    # /!\ Dimensions should be ZCYX /!\
+    
+    if type(bbox2)==list: bbox2=array(bbox2)
+    if type(bbox2)==type(None): bbox2=r_[0,0,im.shape[-1],im.shape[-2]]
+    elif not (type(bbox2)==ndarray and bbox2.shape[0]==4):
+        raise ValueError("Parameter 'bbox' not understood.")
+    
+    if type(rawCCMs)==type(None):
+      # Reduce bounding box if outside of image
+      bbox2=r_[maximum(0,bbox2[:2]), minimum(r_[im.shape[-1], im.shape[-2]],bbox2[2:])]
+    else:
+      if len(rawCCMs)!=im.shape[1]:
+        raise ValueError("Parameter 'rawCCMs' should be a list with a number of elements equal to the number of channels in the raw image.")
+    bbox2=bbox2.round().astype(int)
+  
     if includeRaw:
       if type(rawCCMs)==type(None):
         imRes=c_[(im[:,:,bbox2[1]:bbox2[3],bbox2[0]:bbox2[2]]*1.).swapaxes(0,1).T,
@@ -748,13 +938,13 @@ Poission_and_Gaussian=lambda x,p: pdf_Poisson_log10_weighted(x,p)  +  (1-p[4])/(
 
 def evalSingleFluoDistr(d, guessLog10_sig=6, guessLog10_sig_sd=0.2,
                            guessLog10_bg=4.5, guessLog10_bg_sd=0.2, guess_fracSignalSpots=0.5,
-                           log10_bins=r_[3:7:.01], performFit=True, disp=True):
+                           log10_bins=r_[3:7:.01], performFit=True, disp=True, fnPDF=None):
 
     #twoGaussians_mSq=lambda p: mean((pdf-twoGaussians(fluoLog10,p))**2)
     #oneGaussian_WmSq=lambda p: mean((10**fluoLog10)*(pdf-oneGaussian(fluoLog10,p))**2)
     #twoGaussians_WmSq=lambda p: mean((  fluoLog10  )*(pdf-twoGaussians(fluoLog10,p))**2)
-    #Poission_and_Gaussian_mSq=lambda p: mean((pdf-Poission_and_Gaussian(fluoLog10,p))**2)
-    Poission_and_Gaussian_mSq=lambda p: mean((pdf-Poission_and_Gaussian(fluoLog10,p))**2) + 1e20*(p[1]>2.) #!!!!!!!!!!!
+    Poission_and_Gaussian_mSq=lambda p: mean((pdf-Poission_and_Gaussian(fluoLog10,p))**2)
+    
     
     ## If a fluo. distribution is provided:
     if type(d) not in [int, float, type(None)]:
@@ -815,7 +1005,7 @@ def evalSingleFluoDistr(d, guessLog10_sig=6, guessLog10_sig_sd=0.2,
 
         ax_=ax[0,0]
         ax_.plot(10**fluoLog10,pdf)
-        ax_.plot(10**fluoLog10,Poission_and_Gaussian(fluoLog10,fit))
+        #ax_.plot(10**fluoLog10,Poission_and_Gaussian(fluoLog10,fit))
         ax_.plot(10**fluoLog10[i0:],(pdf_Poisson_log10_weighted(fluoLog10,fit)+10**(-bg_fit[0]*(fluoLog10-bg_fit[1])))[i0:])
         #ax_.plot(10**fluoLog10,fit[4]*pdf_Poisson_log10(fluoLog10,fit[0],fit[1]))
         ax_.plot(10**fluoLog10,pdf_background,zorder=0,c='lightgray')
@@ -857,14 +1047,15 @@ def evalSingleFluoDistr(d, guessLog10_sig=6, guessLog10_sig_sd=0.2,
         ax_.set_xlabel('FNR'); ax_.set_ylabel('FDR')
 
         plt.tight_layout()
-        plt.show()
+        if fnPDF is None: plt.show()
+        else: plt.savefig(fnPDF)
         
     return fit, fluoLog10, pdf, pdf_background, FNR, FDR, FDR_eq_FNR, area_FDR_FNR
 
 
 
 def evalPositiveAndNegativeFluoDistr(d_signal, d_background, fracSignalSpots=.5,
-                                     log10_bins=r_[3:7:.01], disp=True):
+                                     log10_bins=r_[3:7:.01], disp=True, fnPDF=None):
     
     pdf_signal,    fluoLog10 = histogram(log10(d_signal[:,0]),    density=1,bins=log10_bins);
     pdf_background,fluoLog10 = histogram(log10(d_background[:,0]),density=1,bins=log10_bins);
@@ -885,7 +1076,7 @@ def evalPositiveAndNegativeFluoDistr(d_signal, d_background, fracSignalSpots=.5,
     intercept=where((FDR-FNR<0)*1)[0]
     if intercept.shape[0]: FDR_eq_FNR=((FNR+FDR)/2)[intercept[0]]
     else:            FDR_eq_FNR=NaN
-    area_FDR_FNR =sum((lambda a:(a[1:]+a[:-1])/2)(nan_to_num(FDR))*diff(FNR))
+    area_FDR_FNR =sum((lambda a:(a[1:]+a[:-1])/2)(nan_to_num(FDR,nan=1.))*diff(FNR))
 
     if disp:
         print("----------------------------------------------")
@@ -939,7 +1130,8 @@ def evalPositiveAndNegativeFluoDistr(d_signal, d_background, fracSignalSpots=.5,
         ax_.set_xlabel('FNR'); ax_.set_ylabel('FDR')
 
         plt.tight_layout()
-        plt.show()
+        if fnPDF is None: plt.show()
+        else: plt.savefig(fnPDF)
         
     return fracSignalSpots, fluoLog10, pdf_signal, pdf_background, FNR, FDR, FDR_eq_FNR, area_FDR_FNR
 
